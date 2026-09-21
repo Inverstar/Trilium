@@ -95,7 +95,7 @@ class DailyProgressRightWidget extends api.RightPanelWidget {
 
         // 当前笔记的 topic 属性列表
         const topics = this.getTopicValues(note);
-        const currentNoteId = note.noteId || (this.getCurrentNoteSafe() ? this.getCurrentNoteSafe().noteId : "");
+        const currentNoteId = note.noteId || this.getCurrentNoteSafe()?.noteId || "";
 
         // 1. 顶部操作栏
         const $headerBar = $("<div>").css({
