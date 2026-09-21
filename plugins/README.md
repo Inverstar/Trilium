@@ -8,7 +8,7 @@
 
 | 插件目录 | 插件名称 | 类型 | 说明 |
 | :--- | :--- | :--- | :--- |
-| [daily-progress](./daily-progress/) | **关联进展 (Daily Progress Widget)** | 右侧边栏小部件 (`api.RightPanelWidget`) | 聚合与当前笔记相关的 topic 关联、@提及反链及同名每日进展笔记，按时间流卡片展示 |
+| [daily-progress](./daily-progress/) | **关联进展 (Daily Progress Widget)** | 右侧边栏小部件 (`api.RightPanelWidget`) | 以当前笔记的 `#topic` 属性值为唯一标准，自动聚合展示其他包含相同 topic 值的笔记内容，按日期倒序卡片流展示 |
 
 ---
 

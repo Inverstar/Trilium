@@ -2,7 +2,12 @@
  * 插件名称: 关联进展面板 (Daily Progress Widget)
  * 类名: DailyProgressRightWidget
  * 类型: Trilium 右侧面板组件 (RightPanelWidget)
- * 作用: 自动匹配并汇聚当前笔记的相关进展（支持 ~topic 关联、@提及引用、同名进展笔记），按日期倒序卡片流展示。
+ * 作用: 根据当前笔记的 #topic 属性值作为唯一标准，聚合展示其他同样拥有该 #topic 属性值的笔记内容。
+ * 
+ * 匹配规则:
+ * - 获取当前笔记的 #topic 属性值（例如当前笔记设置了 #topic=PKM）。
+ * - 检索并展示除当前笔记以外、其他同样包含该 #topic 属性且属性值完全相同的笔记。
+ * - 严格以此为唯一筛选条件，按日期倒序卡片流展示。
  * 
  * 使用方式:
  * 1. 在 Trilium 中新建一个类型为 "JS Frontend"（前端脚本）的笔记。
@@ -43,6 +48,37 @@ class DailyProgressRightWidget extends api.RightPanelWidget {
         return null;
     }
 
+    /**
+     * 获取指定笔记的所有 topic 属性值
+     */
+    getTopicValues(note) {
+        const values = new Set();
+        if (!note) return [];
+
+        if (typeof note.getLabelValues === "function") {
+            for (const val of note.getLabelValues("topic") || []) {
+                if (typeof val === "string" && val.trim().length > 0) {
+                    values.add(val.trim());
+                }
+            }
+        }
+        if (values.size === 0 && typeof note.getLabelValue === "function") {
+            const val = note.getLabelValue("topic");
+            if (typeof val === "string" && val.trim().length > 0) {
+                values.add(val.trim());
+            }
+        }
+        if (values.size === 0 && typeof note.getAttributes === "function") {
+            const attrs = note.getAttributes() || [];
+            for (const attr of attrs) {
+                if (attr && attr.name === "topic" && typeof attr.value === "string" && attr.value.trim().length > 0) {
+                    values.add(attr.value.trim());
+                }
+            }
+        }
+        return Array.from(values);
+    }
+
     async updateContent(note) {
         if (!this.$widget) return;
         this.$widget.empty();
@@ -57,7 +93,8 @@ class DailyProgressRightWidget extends api.RightPanelWidget {
             return;
         }
 
-        // 获取当前正在查看的笔记 ID（排除自身的基准）
+        // 当前笔记的 topic 属性列表
+        const topics = this.getTopicValues(note);
         const currentNoteId = note.noteId || (this.getCurrentNoteSafe() ? this.getCurrentNoteSafe().noteId : "");
 
         // 1. 顶部操作栏
@@ -94,6 +131,22 @@ class DailyProgressRightWidget extends api.RightPanelWidget {
         $headerBar.append($statusText, $refreshBtn);
         this.$widget.append($headerBar);
 
+        // 如果当前笔记未配置 topic 属性，则给出明确提示
+        if (topics.length === 0) {
+            $statusText.text("未设置 #topic 属性");
+            this.$widget.append(`
+                <div style="padding: 28px 12px; text-align: center; color: var(--muted-text-color, #888); font-size: 13px;">
+                    <i class="bx bx-purchase-tag-alt" style="font-size: 28px; opacity: 0.45; display: block; margin-bottom: 8px;"></i>
+                    当前笔记未设置 <code>#topic</code> 属性
+                    <div style="font-size: 11px; opacity: 0.75; margin-top: 6px; line-height: 1.5;">
+                        请在当前笔记添加属性（例如 <code>#topic=PKM</code>）<br>
+                        面板将以该值为唯一标准，自动聚合其他相同 topic 的笔记
+                    </div>
+                </div>
+            `);
+            return;
+        }
+
         // 2. 外层卡片流容器
         const $cardList = $("<div>").css({
             "display": "flex",
@@ -108,114 +161,60 @@ class DailyProgressRightWidget extends api.RightPanelWidget {
         });
         this.$widget.append($cardList);
 
-        // 3. 收集候选笔记
-        const candidateMap = new Map(); // noteId -> { note, excerpts, matchType }
+        // 3. 严格唯一检索：按当前笔记的每个 topic 值查找其他笔记
+        const candidateMap = new Map(); // noteId -> { note, matchedTopics }
 
-        // --- 途径 A: 严格查找 topic 关系（排除自己） ---
-        const targetRels = (typeof note.getTargetRelations === "function") ? note.getTargetRelations() : [];
-        for (const rel of targetRels) {
-            if (rel && rel.name === "topic" && rel.noteId && rel.noteId !== currentNoteId) {
-                if (!candidateMap.has(rel.noteId)) {
-                    const srcNote = await api.getNote(rel.noteId);
-                    if (srcNote && srcNote.noteId !== currentNoteId) {
-                        candidateMap.set(rel.noteId, {
-                            note: srcNote,
-                            excerpts: [],
-                            matchType: "topic 关联"
-                        });
-                    }
-                }
-            }
-        }
+        for (const topic of topics) {
+            try {
+                const escapedTopic = topic.replace(/"/g, '\\"');
+                const searchResults = await api.searchForNotes(`#topic = "${escapedTopic}"`);
+                if (Array.isArray(searchResults)) {
+                    for (const src of searchResults) {
+                        if (!src || !src.noteId || src.noteId === currentNoteId) continue;
+                        if (src.type === "search") continue;
 
-        // --- 途径 B: 严格查找 @提及 / 链接（排除自己） ---
-        try {
-            const baseUrl = (window.glob && window.glob.baseApiUrl) ? window.glob.baseApiUrl : "api/";
-            const backlinks = await $.get(baseUrl + "note-map/" + currentNoteId + "/backlinks");
-            if (Array.isArray(backlinks)) {
-                for (const bl of backlinks) {
-                    if (!bl || !bl.noteId || bl.noteId === currentNoteId) continue;
-                    
-                    const isTopic = bl.relationName === "topic";
-                    const hasExcerpts = Array.isArray(bl.excerpts) && bl.excerpts.length > 0;
-
-                    if (isTopic || hasExcerpts) {
-                        let item = candidateMap.get(bl.noteId);
-                        if (!item) {
-                            const srcNote = await api.getNote(bl.noteId);
-                            if (srcNote && srcNote.noteId !== currentNoteId) {
-                                item = {
-                                    note: srcNote,
-                                    excerpts: bl.excerpts || [],
-                                    matchType: isTopic ? "topic 关联" : "@提及引用"
-                                };
-                                candidateMap.set(bl.noteId, item);
-                            }
-                        } else if (hasExcerpts) {
-                            item.excerpts = bl.excerpts;
-                            if (item.matchType !== "topic 关联") {
-                                item.matchType = "@提及引用";
-                            }
-                        }
-                    }
-                }
-            }
-        } catch (e) {
-            console.warn("backlinks API error:", e);
-        }
-
-        // --- 途径 C: 查找同名子笔记/进展笔记（严格排除当前笔记自身） ---
-        try {
-            const searchNotes = await api.searchForNotes(`# note.title = "${note.title}"`);
-            if (Array.isArray(searchNotes)) {
-                for (const src of searchNotes) {
-                    if (src && src.noteId && src.noteId !== currentNoteId) {
                         if (!candidateMap.has(src.noteId)) {
                             candidateMap.set(src.noteId, {
                                 note: src,
-                                excerpts: [],
-                                matchType: "同名进展"
+                                matchedTopics: [topic]
                             });
+                        } else {
+                            const item = candidateMap.get(src.noteId);
+                            if (!item.matchedTopics.includes(topic)) {
+                                item.matchedTopics.push(topic);
+                            }
                         }
                     }
                 }
+            } catch (e) {
+                console.warn(`searchForNotes error for topic '${topic}':`, e);
             }
-        } catch (e) {}
+        }
 
-        // 4. 对所有收集到的笔记进行严格判定过滤与数据清洗
-        const currentTitleLower = (note.title || "").trim().toLowerCase();
+        // 4. 对收集到的笔记进行严格双重校验（排除自身，确保严格具备匹配的 topic 属性）
         const validItems = [];
 
         for (const item of candidateMap.values()) {
             const src = item.note;
-            // 铁律：坚决排除当前笔记自身
             if (!src || !src.noteId || src.noteId === currentNoteId) continue;
             if (src.type === "search") continue;
 
-            // 获取正文
-            let rawContent = "";
+            const srcTopics = this.getTopicValues(src);
+            const matched = srcTopics.filter(t => topics.includes(t));
+            if (matched.length === 0) continue;
+
+            // 获取正文纯文本
+            let contentText = "";
             if (src.getContent) {
                 try {
                     const c = await src.getContent();
-                    if (typeof c === "string") rawContent = c;
+                    if (typeof c === "string" && c.trim()) {
+                        const $temp = $("<div>").html(c);
+                        $temp.find("script, style, iframe").remove();
+                        contentText = $temp.text().trim();
+                    }
                 } catch (e) {}
             }
-
-            // 严格三条件校验
-            const isTopic = (item.matchType === "topic 关联") || 
-                (src.getRelations && src.getRelations("topic").some(r => r.value === currentNoteId || r.value === note.title));
-            
-            const isSameTitle = src.title && (src.title.trim().toLowerCase() === currentTitleLower);
-
-            const isMention = (item.excerpts && item.excerpts.length > 0) ||
-                (rawContent && (rawContent.includes(currentNoteId) || rawContent.includes("@" + note.title)));
-
-            // 必须命中至少一项
-            if (!isTopic && !isSameTitle && !isMention) {
-                continue;
-            }
-
-            const matchBadge = isTopic ? "🏷️ topic 关联" : (isMention ? "🔗 @引用" : "📄 同名进展");
 
             // 计算日期与父笔记面包屑
             let dateStr = "";
@@ -225,7 +224,6 @@ class DailyProgressRightWidget extends api.RightPanelWidget {
                 const parents = src.getParentNotes();
                 if (Array.isArray(parents) && parents.length > 0 && parents[0]) {
                     parentTitle = parents[0].title || "";
-                    // 优先从父笔记标题匹配日记日期（如 2026-09-21）
                     const match = parentTitle.match(/\d{4}-\d{2}-\d{2}/);
                     if (match) dateStr = match[0];
                 }
@@ -247,50 +245,36 @@ class DailyProgressRightWidget extends api.RightPanelWidget {
                 } catch (e) {}
             }
 
-            // 提取纯文本正文
-            let contentText = "";
-            if (item.excerpts && item.excerpts.length > 0) {
-                contentText = item.excerpts
-                    .map(html => $("<div>").html(html).text().trim())
-                    .filter(t => t.length > 0)
-                    .join("\n\n");
-            }
-            if (!contentText && rawContent) {
-                const $temp = $("<div>").html(rawContent);
-                $temp.find("script, style, iframe").remove();
-                contentText = $temp.text().trim();
-            }
-
             validItems.push({
                 noteId: src.noteId,
                 title: src.title || "未命名笔记",
                 parentTitle,
                 date: dateStr || "未知日期",
                 content: contentText || "（暂无文本内容）",
-                matchBadge,
-                isSameTitle
+                matchedTopics: matched
             });
         }
 
-        $statusText.text(`精准匹配: ${validItems.length} 条关联进展`);
+        const topicLabel = topics.map(t => `#topic=${t}`).join(", ");
+        $statusText.text(`匹配到: ${validItems.length} 条笔记 (${topicLabel})`);
 
         if (validItems.length === 0) {
             $cardList.html(`
                 <div style="text-align: center; padding: 28px 12px; color: var(--muted-text-color, #888); font-size: 13px;">
                     <i class="bx bx-calendar-x" style="font-size: 26px; opacity: 0.45; display: block; margin-bottom: 6px;"></i>
-                    暂无其他关联进展
+                    暂无其他包含 <code>${topicLabel}</code> 的笔记
                     <div style="font-size: 11px; opacity: 0.7; margin-top: 4px;">
-                        仅匹配：① @引用本笔记 ② 配置了 ~topic 关系 ③ 其他同名进展笔记
+                        仅展示其他包含相同 topic 属性值的笔记
                     </div>
                 </div>
             `);
             return;
         }
 
-        // 按日期倒序排列
+        // 按日期倒序排列（新笔记排在前面）
         validItems.sort((a, b) => b.date.localeCompare(a.date));
 
-        // 5. 渲染卡片
+        // 5. 渲染卡片流
         for (const item of validItems) {
             const $card = $("<div>").css({
                 "display": "flex",
@@ -307,7 +291,7 @@ class DailyProgressRightWidget extends api.RightPanelWidget {
                 "transition": "border-color 0.2s, box-shadow 0.2s"
             });
 
-            // 卡片头部（日期 + 来源标签）
+            // 卡片头部（日期 + Topic 标签）
             const $cardHeader = $("<div>").css({
                 "display": "flex",
                 "align-items": "center",
@@ -324,18 +308,20 @@ class DailyProgressRightWidget extends api.RightPanelWidget {
                 "color": "var(--primary-color, #2563eb)"
             }).text("📅 " + item.date);
 
-            const $typeBadge = $("<span>").css({
-                "font-size": "10px",
-                "padding": "1px 5px",
+            const topicText = item.matchedTopics.map(t => `#topic=${t}`).join(", ");
+            const $topicBadge = $("<span>").css({
+                "font-size": "10.5px",
+                "padding": "1px 6px",
                 "border-radius": "3px",
-                "background": "rgba(0,0,0,0.04)",
-                "color": "var(--muted-text-color, #666)"
-            }).text(item.matchBadge);
+                "background": "rgba(37, 99, 235, 0.08)",
+                "color": "var(--primary-color, #2563eb)",
+                "font-weight": "500"
+            }).text("🏷️ " + topicText);
 
-            $cardHeader.append($dateBadge, $typeBadge);
+            $cardHeader.append($dateBadge, $topicBadge);
 
-            // 笔记标题跳转（若为同名笔记，附带父级目录提示）
-            const displayTitle = item.isSameTitle && item.parentTitle 
+            // 笔记标题跳转（附带父级目录提示）
+            const displayTitle = item.parentTitle 
                 ? `${item.parentTitle} / ${item.title}` 
                 : item.title;
 
