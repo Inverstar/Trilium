@@ -8,7 +8,7 @@
 
 | 插件目录 | 插件名称 | 类型 | 说明 |
 | :--- | :--- | :--- | :--- |
-| [daily-progress](./daily-progress/) | **关联进展 (Daily Progress Widget)** | 右侧边栏小部件 (`api.RightPanelWidget`) | 以当前笔记的 `#topic` 属性值为唯一标准，聚合展示其他相同 topic 值的笔记。含 v2 增强版：支持原样富文本与图片渲染、手风琴列表展开收起、就地编辑保存 |
+| [daily-progress](./daily-progress/) | **关联进展 (Daily Progress Widget)** | 右侧边栏小部件 (`api.RightPanelWidget`) | 聚合展示关联笔记。含 **V3 逻辑表达式增强版**（支持 `topic`、`theme`、`tag` 多维布尔组合筛选如 `A与C或B`、`A与C非B`、交互式控制台、持久化规则）、**V2 增强版**（原样富文本与图片渲染、手风琴折叠展开、就地编辑保存）及 **V1 经典版** |
 
 ---
 
